@@ -10,30 +10,31 @@ HARDWARE CONFIGURATION
 - GPIO Pin: 18
 - Flash Port: COM14
 
-WIFI CREDENTIALS
-----------------
+WIFI CREDENTIALS (Hardcoded in src/main.rs)
+--------------------------------------------
 - SSID: lola
 - Password: 12345678
 
-MQTT BROKER SETTINGS
---------------------
-- Broker: broker.emqx.io (Public MQTT broker)
+MQTT BROKER SETTINGS (Hardcoded in src/main.rs)
+------------------------------------------------
+- Broker: broker.emqx.io (Public MQTT broker, no authentication)
 - Port: 1883
 - Protocol: MQTT 3.1.1
-- QoS: 0 (Fire and forget)
-- Authentication: None (public broker)
+- QoS: 0 (Fire and forget, no acknowledgment)
+- Authentication: None
 - TLS: Disabled
+- Clean Session: Enabled
 
-MQTT TOPICS
------------
+MQTT TOPIC (Hardcoded in src/main.rs)
+--------------------------------------
 - Publish Topic: enose/ESP32-001/measurement
-- Topic Pattern: enose/<device_id>/measurement
+- Topic Format: enose/<device_id>/measurement
 
 DEVICE SETTINGS
 ---------------
-- Device ID: ESP32-001
-- Interval: 10 seconds (configurable via INTERVAL_SECONDS env)
-- Max Sample ID: 18
+- Device ID: ESP32-001 (configurable via DEVICE_ID env at compile time)
+- Publish Interval: 10 seconds (configurable via INTERVAL_SECONDS env)
+- Max Sample ID: 18 (cycles from 1 to 18)
 
 MQTT PAYLOAD FORMAT (JSON)
 --------------------------
