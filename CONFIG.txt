@@ -1,0 +1,107 @@
+===============================================
+ESP32-S3 DHT22 MQTT Configuration
+FULL RUST NO STD Firmware
+===============================================
+
+HARDWARE CONFIGURATION
+----------------------
+- Board: ESP32-S3
+- Sensor: DHT22 (Temperature & Humidity)
+- GPIO Pin: 18
+- Flash Port: COM14
+
+WIFI CREDENTIALS
+----------------
+- SSID: lola
+- Password: 12345678
+
+MQTT BROKER SETTINGS
+--------------------
+- Broker: broker.emqx.io (Public MQTT broker)
+- Port: 1883
+- Protocol: MQTT 3.1.1
+- QoS: 0 (Fire and forget)
+- Authentication: None (public broker)
+- TLS: Disabled
+
+MQTT TOPICS
+-----------
+- Publish Topic: enose/ESP32-001/measurement
+- Topic Pattern: enose/<device_id>/measurement
+
+DEVICE SETTINGS
+---------------
+- Device ID: ESP32-001
+- Interval: 10 seconds (configurable via INTERVAL_SECONDS env)
+- Max Sample ID: 18
+
+MQTT PAYLOAD FORMAT (JSON)
+--------------------------
+{
+  "sample_id": <1-18>,
+  "score": <temperature in celsius>,
+  "accuracy": <humidity percentage>,
+  "source": "dht22",
+  "device_id": "ESP32-001",
+  "features": [<temp*10>, <humidity*10>, 0, 0, 0, 0, 0, 0]
+}
+
+Example:
+{
+  "sample_id": 1,
+  "score": 31.2,
+  "accuracy": 73.1,
+  "source": "dht22",
+  "device_id": "ESP32-001",
+  "features": [312, 731, 0, 0, 0, 0, 0, 0]
+}
+
+BUILD & FLASH COMMANDS
+----------------------
+1. Setup environment:
+   . $HOME\export-esp.ps1
+
+2. Build:
+   cargo build --release
+
+3. Flash & Monitor:
+   cargo run --release
+   
+   OR:
+   
+   espflash flash --monitor target\xtensa-esp32s3-none-elf\release\lancar-esp32-no-std --port COM14
+
+BACKEND DASHBOARD
+-----------------
+- URL: https://enose-cloud-backend-production-facd.up.railway.app/dashboard
+- Backend subscribes to: enose/+/measurement
+- Database: PostgreSQL on Railway
+
+DEPENDENCIES
+------------
+- esp-hal: 0.23.1
+- esp-wifi: 0.11.0
+- embassy-executor: 0.6.2
+- embassy-time: 0.3.2
+- heapless: 0.8.0
+- dht-sensor: 0.2.1
+
+IMPORTANT NOTES
+---------------
+1. This is NO_STD firmware (no standard library)
+2. Uses esp-hal 0.23.1 to avoid naked_asm! macro issues
+3. MQTT implementation is manual (no external MQTT library)
+4. DHT22 readings in fixed-point (x10) to avoid floating point
+5. QoS 0 PUBLISH packet does NOT include Packet Identifier
+6. Clean Session flag enabled in CONNECT packet
+
+TROUBLESHOOTING
+---------------
+- If MQTT fails: Check broker.emqx.io is reachable
+- If JSON invalid: Verify payload format matches backend expectations
+- If data not in dashboard: Restart backend on Railway
+- If build fails: Ensure export-esp.ps1 is sourced first
+
+===============================================
+Last Updated: 2026-09-27
+===============================================

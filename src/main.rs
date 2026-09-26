@@ -75,10 +75,8 @@ const WIFI_SSID: &str = "lola";
 const WIFI_PASSWORD: &str = "12345678";
 const MAX_SAMPLE_ID: u32 = 18;
 const MQTT_TOPIC: &str = "enose/ESP32-001/measurement";
-const MQTT_HOST: &str = "fb113b25.ala.asia-southeast1.emqxsl.com";
+const MQTT_HOST: &str = "broker.emqx.io";
 const MQTT_PORT: u16 = 1883;
-const MQTT_USERNAME: &str = "enose_device";
-const MQTT_PASSWORD: &str = "11223344";
 const HEAP_SIZE: usize = 128 * 1024;
 
 static mut HEAP: MaybeUninit<[u8; HEAP_SIZE]> = MaybeUninit::uninit();
@@ -182,15 +180,15 @@ fn write_decimal_x10<const N: usize>(output: &mut String<N>, value: i16) {
     let _ = write!(output, "{}.{:01}", absolute / 10, absolute % 10);
 }
 
-fn build_mqtt_connect_packet(buffer: &mut [u8], client_id: &str, username: &str, password: &str) -> Option<usize> {
-    // MQTT CONNECT packet format:
+fn build_mqtt_connect_packet(buffer: &mut [u8], client_id: &str) -> Option<usize> {
+    // MQTT CONNECT packet format for public broker (no auth):
     // Fixed header: 0x10 (CONNECT), Remaining Length
     // Variable header: Protocol Name (MQTT), Protocol Level (4), Connect Flags, Keep Alive
-    // Payload: Client ID, Username, Password
+    // Payload: Client ID only
     
     let protocol_name = "MQTT";
     let protocol_level = 4u8; // MQTT 3.1.1
-    let connect_flags = 0xC2u8; // Username flag (bit 7) + Password flag (bit 6) + Clean Session (bit 1)
+    let connect_flags = 0x02u8; // Clean Session (bit 1) only, no auth
     let keep_alive = 60u16; // 60 seconds
     
     // Calculate remaining length
@@ -200,8 +198,6 @@ fn build_mqtt_connect_packet(buffer: &mut [u8], client_id: &str, username: &str,
     remaining_length += 1; // Connect flags
     remaining_length += 2; // Keep alive
     remaining_length += 2 + client_id.len(); // Client ID
-    remaining_length += 2 + username.len(); // Username
-    remaining_length += 2 + password.len(); // Password
     
     if remaining_length > 268_435_455 {
         return None;
@@ -270,38 +266,20 @@ fn build_mqtt_connect_packet(buffer: &mut [u8], client_id: &str, username: &str,
     buffer[cursor..cursor + client_id.len()].copy_from_slice(client_id.as_bytes());
     cursor += client_id.len();
     
-    // Payload - Username
-    if cursor + 2 + username.len() > buffer.len() {
-        return None;
-    }
-    buffer[cursor..cursor + 2].copy_from_slice(&(username.len() as u16).to_be_bytes());
-    cursor += 2;
-    buffer[cursor..cursor + username.len()].copy_from_slice(username.as_bytes());
-    cursor += username.len();
-    
-    // Payload - Password
-    if cursor + 2 + password.len() > buffer.len() {
-        return None;
-    }
-    buffer[cursor..cursor + 2].copy_from_slice(&(password.len() as u16).to_be_bytes());
-    cursor += 2;
-    buffer[cursor..cursor + password.len()].copy_from_slice(password.as_bytes());
-    cursor += password.len();
-    
     Some(cursor)
 }
 
 fn write_mqtt_publish<'a>(buffer: &'a mut [u8], topic: &str, payload: &[u8]) -> Option<&'a [u8]> {
+    // MQTT PUBLISH QoS 0: no Packet Identifier needed
     let remaining_length = 2usize
         .checked_add(topic.len())?
-        .checked_add(1)?
         .checked_add(payload.len())?;
     if topic.len() > u16::MAX as usize || remaining_length > 268_435_455 {
         return None;
     }
 
     let mut cursor = 0;
-    buffer[cursor] = 0x30;
+    buffer[cursor] = 0x30; // PUBLISH QoS 0
     cursor += 1;
 
     let mut encoded_length = remaining_length as u32;
@@ -324,7 +302,6 @@ fn write_mqtt_publish<'a>(buffer: &'a mut [u8], topic: &str, payload: &[u8]) -> 
     let end = cursor
         .checked_add(2)?
         .checked_add(topic.len())?
-        .checked_add(1)?
         .checked_add(payload.len())?;
     if end > buffer.len() {
         return None;
@@ -334,8 +311,6 @@ fn write_mqtt_publish<'a>(buffer: &'a mut [u8], topic: &str, payload: &[u8]) -> 
     cursor += 2;
     buffer[cursor..cursor + topic.len()].copy_from_slice(topic.as_bytes());
     cursor += topic.len();
-    buffer[cursor] = 0;
-    cursor += 1;
     buffer[cursor..end].copy_from_slice(payload);
 
     Some(&buffer[..end])
@@ -407,13 +382,11 @@ async fn mqtt_task(
     }
     esp_println::println!("MQTT TCP connected");
 
-    // Build MQTT CONNECT packet with username/password authentication
+    // Build MQTT CONNECT packet (no auth for public broker)
     let mut connect_buffer = [0u8; 512];
     let connect_packet_len = match build_mqtt_connect_packet(
         &mut connect_buffer,
         device_id(),
-        MQTT_USERNAME,
-        MQTT_PASSWORD,
     ) {
         Some(len) => len,
         None => {
@@ -424,7 +397,7 @@ async fn mqtt_task(
         }
     };
     
-    esp_println::println!("MQTT: Connecting with username: {}", MQTT_USERNAME);
+    esp_println::println!("MQTT: Connecting to public broker without auth");
     if socket.write(&connect_buffer[..connect_packet_len]).await.is_err() {
         esp_println::println!("MQTT CONNECT send failed");
         loop {
