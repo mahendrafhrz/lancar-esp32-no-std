@@ -20,7 +20,6 @@ use esp_hal_embassy::main;
 use esp_wifi::wifi::{ClientConfiguration, WifiController, WifiDevice, WifiStaDevice};
 use esp_wifi::EspWifiController;
 use heapless::String;
-use tinymqtt::MqttClient;
 
 const fn app_text<const N: usize>(value: &[u8]) -> [core::ffi::c_char; N] {
     let mut result = [0; N];
@@ -72,10 +71,14 @@ static APP_DESCRIPTION: AppDescription = AppDescription {
 
 const DEFAULT_DEVICE_ID: &str = "ESP32-001";
 const DEFAULT_INTERVAL_SECONDS: u32 = 10;
+const WIFI_SSID: &str = "lola";
+const WIFI_PASSWORD: &str = "12345678";
 const MAX_SAMPLE_ID: u32 = 18;
 const MQTT_TOPIC: &str = "enose/ESP32-001/measurement";
-const MQTT_HOST: &str = "broker.emqx.io";
+const MQTT_HOST: &str = "fb113b25.ala.asia-southeast1.emqxsl.com";
 const MQTT_PORT: u16 = 1883;
+const MQTT_USERNAME: &str = "enose_device";
+const MQTT_PASSWORD: &str = "11223344";
 const HEAP_SIZE: usize = 128 * 1024;
 
 static mut HEAP: MaybeUninit<[u8; HEAP_SIZE]> = MaybeUninit::uninit();
@@ -104,11 +107,11 @@ fn interval_seconds() -> u32 {
 }
 
 fn wifi_ssid() -> &'static str {
-    option_env!("WIFI_SSID").unwrap_or("CHANGE_ME")
+    WIFI_SSID
 }
 
 fn wifi_password() -> &'static str {
-    option_env!("WIFI_PASSWORD").unwrap_or("CHANGE_ME")
+    WIFI_PASSWORD
 }
 
 fn wait_level(pin: &OutputOpenDrain<'_>, level: bool, timeout_us: u32, delay: &mut Delay) -> bool {
@@ -177,6 +180,115 @@ fn write_decimal_x10<const N: usize>(output: &mut String<N>, value: i16) {
         let _ = output.push('-');
     }
     let _ = write!(output, "{}.{:01}", absolute / 10, absolute % 10);
+}
+
+fn build_mqtt_connect_packet(buffer: &mut [u8], client_id: &str, username: &str, password: &str) -> Option<usize> {
+    // MQTT CONNECT packet format:
+    // Fixed header: 0x10 (CONNECT), Remaining Length
+    // Variable header: Protocol Name (MQTT), Protocol Level (4), Connect Flags, Keep Alive
+    // Payload: Client ID, Username, Password
+    
+    let protocol_name = "MQTT";
+    let protocol_level = 4u8; // MQTT 3.1.1
+    let connect_flags = 0xC2u8; // Username flag (bit 7) + Password flag (bit 6) + Clean Session (bit 1)
+    let keep_alive = 60u16; // 60 seconds
+    
+    // Calculate remaining length
+    let mut remaining_length = 0usize;
+    remaining_length += 2 + protocol_name.len(); // Protocol name (2 bytes length + string)
+    remaining_length += 1; // Protocol level
+    remaining_length += 1; // Connect flags
+    remaining_length += 2; // Keep alive
+    remaining_length += 2 + client_id.len(); // Client ID
+    remaining_length += 2 + username.len(); // Username
+    remaining_length += 2 + password.len(); // Password
+    
+    if remaining_length > 268_435_455 {
+        return None;
+    }
+    
+    let mut cursor = 0usize;
+    
+    // Fixed header
+    buffer[cursor] = 0x10; // CONNECT packet type
+    cursor += 1;
+    
+    // Encode remaining length
+    let mut encoded_length = remaining_length;
+    loop {
+        let mut byte = (encoded_length % 128) as u8;
+        encoded_length /= 128;
+        if encoded_length > 0 {
+            byte |= 0x80;
+        }
+        if cursor >= buffer.len() {
+            return None;
+        }
+        buffer[cursor] = byte;
+        cursor += 1;
+        if encoded_length == 0 {
+            break;
+        }
+    }
+    
+    // Variable header - Protocol name
+    if cursor + 2 + protocol_name.len() > buffer.len() {
+        return None;
+    }
+    buffer[cursor..cursor + 2].copy_from_slice(&(protocol_name.len() as u16).to_be_bytes());
+    cursor += 2;
+    buffer[cursor..cursor + protocol_name.len()].copy_from_slice(protocol_name.as_bytes());
+    cursor += protocol_name.len();
+    
+    // Protocol level
+    if cursor >= buffer.len() {
+        return None;
+    }
+    buffer[cursor] = protocol_level;
+    cursor += 1;
+    
+    // Connect flags
+    if cursor >= buffer.len() {
+        return None;
+    }
+    buffer[cursor] = connect_flags;
+    cursor += 1;
+    
+    // Keep alive
+    if cursor + 2 > buffer.len() {
+        return None;
+    }
+    buffer[cursor..cursor + 2].copy_from_slice(&keep_alive.to_be_bytes());
+    cursor += 2;
+    
+    // Payload - Client ID
+    if cursor + 2 + client_id.len() > buffer.len() {
+        return None;
+    }
+    buffer[cursor..cursor + 2].copy_from_slice(&(client_id.len() as u16).to_be_bytes());
+    cursor += 2;
+    buffer[cursor..cursor + client_id.len()].copy_from_slice(client_id.as_bytes());
+    cursor += client_id.len();
+    
+    // Payload - Username
+    if cursor + 2 + username.len() > buffer.len() {
+        return None;
+    }
+    buffer[cursor..cursor + 2].copy_from_slice(&(username.len() as u16).to_be_bytes());
+    cursor += 2;
+    buffer[cursor..cursor + username.len()].copy_from_slice(username.as_bytes());
+    cursor += username.len();
+    
+    // Payload - Password
+    if cursor + 2 + password.len() > buffer.len() {
+        return None;
+    }
+    buffer[cursor..cursor + 2].copy_from_slice(&(password.len() as u16).to_be_bytes());
+    cursor += 2;
+    buffer[cursor..cursor + password.len()].copy_from_slice(password.as_bytes());
+    cursor += password.len();
+    
+    Some(cursor)
 }
 
 fn write_mqtt_publish<'a>(buffer: &'a mut [u8], topic: &str, payload: &[u8]) -> Option<&'a [u8]> {
@@ -295,30 +407,61 @@ async fn mqtt_task(
     }
     esp_println::println!("MQTT TCP connected");
 
-    let mut client: MqttClient<1024> = MqttClient::new();
-    let connect_packet = match client.connect(device_id(), None) {
-        Ok(packet) => packet,
-        Err(_) => loop {
-            Timer::after(Duration::from_secs(5)).await;
-        },
+    // Build MQTT CONNECT packet with username/password authentication
+    let mut connect_buffer = [0u8; 512];
+    let connect_packet_len = match build_mqtt_connect_packet(
+        &mut connect_buffer,
+        device_id(),
+        MQTT_USERNAME,
+        MQTT_PASSWORD,
+    ) {
+        Some(len) => len,
+        None => {
+            esp_println::println!("MQTT CONNECT packet build failed");
+            loop {
+                Timer::after(Duration::from_secs(5)).await;
+            }
+        }
     };
-    let _ = socket.write(connect_packet).await;
+    
+    esp_println::println!("MQTT: Connecting with username: {}", MQTT_USERNAME);
+    if socket.write(&connect_buffer[..connect_packet_len]).await.is_err() {
+        esp_println::println!("MQTT CONNECT send failed");
+        loop {
+            Timer::after(Duration::from_secs(5)).await;
+        }
+    }
 
     let response_length = match socket.read(&mut packet_buffer).await {
         Ok(length) => length,
         Err(_) => 0,
     };
-    if response_length == 0
-        || client
-            .receive_packet(&packet_buffer[..response_length], |_, _, _| {})
-            .is_err()
-    {
-        esp_println::println!("MQTT CONNACK failed");
+    
+    // Check CONNACK response
+    if response_length < 4 {
+        esp_println::println!("MQTT CONNACK invalid (too short)");
         loop {
             Timer::after(Duration::from_secs(5)).await;
         }
     }
-    esp_println::println!("MQTT connected");
+    
+    // CONNACK format: [0x20, remaining_length, session_present, return_code]
+    if packet_buffer[0] != 0x20 {
+        esp_println::println!("MQTT CONNACK invalid packet type: {:#x}", packet_buffer[0]);
+        loop {
+            Timer::after(Duration::from_secs(5)).await;
+        }
+    }
+    
+    let return_code = packet_buffer[3];
+    if return_code != 0 {
+        esp_println::println!("MQTT CONNACK failed with return code: {} (check credentials!)", return_code);
+        loop {
+            Timer::after(Duration::from_secs(5)).await;
+        }
+    }
+    
+    esp_println::println!("MQTT connected with authentication!");
 
     let mut sample_id = 1u32;
     loop {
